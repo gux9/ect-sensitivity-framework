@@ -58,7 +58,7 @@ exposes NIMBLE model code as named objects at the top of each block, and all
 analyses return a standardized named list containing posterior summaries, MCMC
 samples, convergence diagnostics, and LaTeX-ready table output.
 
-**`XEN_nimble_realRWE_no102009.csv`**  
+**`scenario.csv`**  
 Simulated dataset used in the primary analysis and most sensitivity analyses.
 Each row is a patient–visit observation with columns:
 `pid`, `study`, `visit`, `n`, `race`, `base.pd`, `pd`, `pdch`, `pdpch`,
