@@ -13,9 +13,9 @@ Output files (kept local, NOT committed to the repo):
     ect_source_trajectories.png
 """
 
+import os
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -52,83 +52,45 @@ def emax_mu(x, race, z, p):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 1. Load original data and fit model
+# 1. True longitudinal parameters (from the published fitted curves)
 # ──────────────────────────────────────────────────────────────────────────────
+#
+# Truth is taken from the published model-fitted IOP % change figure, NOT
+# from a fresh fit to the raw rows.  An unconstrained fit to the sparse,
+# noisy raw data collapses to a degenerate solution (ED50 -> 0, wrong-sign
+# Emax) that yields a flat, monotone curve.  The published Emax + linear
+# fit has the characteristic shape: deep day-1 drop, sharp recovery to a
+# peak near day 84, then a gradual decline, with the Asian arm starting
+# slightly deeper and declining more steeply late.  These constants
+# reproduce that figure and match Sensitivity_analysis.R (manuscript Eq. 2).
 
-print("Loading scenario.csv …")
-raw = pd.read_csv("scenario.csv", header=0)
-
-# The CSV has duplicate header names "pdpch,pdpch"; pandas appends ".1"
-# Column 8 (pdpch)   = pdch  (absolute change)
-# Column 9 (pdpch.1) = pdpch (% change) — the model outcome
-rename = {}
-if "pdpch.1" in raw.columns:
-    rename["pdpch"]   = "pdch"
-    rename["pdpch.1"] = "pdpch"
-raw = raw.rename(columns=rename)
-
-orig = raw.dropna(subset=["pdpch"]).copy()
-print(f"  {len(orig)} rows after dropping NAs")
-print(f"  Columns: {list(orig.columns)}")
-
-# Weighted objective: sum n[i] * (y[i] - mu[i])^2
-PARAM_NAMES = ["e0","emax","log_ed50","log_r1","k","a",
-               "de0","demax","ded50","dr1","dk"]
-
-def obj(par_vec):
-    p = {
-        "e0"   : par_vec[0],
-        "emax" : par_vec[1],
-        "ed50" : np.exp(par_vec[2]),
-        "r1"   : np.exp(par_vec[3]),
-        "k"    : par_vec[4],
-        "a"    : par_vec[5],
-        "de0"  : par_vec[6],
-        "demax": par_vec[7],
-        "ded50": par_vec[8],
-        "dr1"  : par_vec[9],
-        "dk"   : par_vec[10],
-    }
-    mu_hat = emax_mu(orig["visit"].values,
-                     orig["race"].values,
-                     orig["base.pd.cent"].values, p)
-    resid = orig["pdpch"].values - mu_hat
-    return float(np.sum(orig["n"].values * resid**2))
-
-par0 = np.array([0.00, -0.45, np.log(0.5), np.log(1.2),
-                 0.0008, -0.012, -0.03, -0.08, 0.0, 0.0, -0.0001])
-
-print("Fitting model …")
-res = minimize(obj, par0, method="Nelder-Mead",
-               options={"maxiter": 200_000, "xatol": 1e-9, "fatol": 1e-9})
-
-tp = res.x
 TRUE_PARAMS = {
-    "e0"   : tp[0],
-    "emax" : tp[1],
-    "ed50" : np.exp(tp[2]),
-    "r1"   : np.exp(tp[3]),
-    "k"    : tp[4],
-    "a"    : tp[5],
-    "de0"  : tp[6],
-    "demax": tp[7],
-    "ded50": tp[8],
-    "dr1"  : tp[9],
-    "dk"   : tp[10],
+    "e0"   : -0.66,      # day-0 intercept (deep initial lowering)
+    "emax" :  0.42,      # recovery magnitude toward the plateau
+    "ed50" :  8.0,       # day at which half the recovery is reached
+    "r1"   :  1.3,       # Hill / steepness of the recovery
+    "k"    : -0.00028,   # slow long-term decline (Non-Asian)
+    "a"    : -0.010,     # baseline-PD covariate effect (centred)
+    "de0"  : -0.04,      # Asian: deeper initial drop
+    "demax":  0.05,      # Asian: larger recovery -> same peak
+    "ded50":  0.0,       # Asian: same half-recovery time
+    "dr1"  :  0.0,       # Asian: same steepness
+    "dk"   : -0.00012,   # Asian: steeper long-term decline
+    "tau2" :  0.0025,    # residual variance (per single observation)
 }
 
-# Estimate tau2 from weighted residuals
-mu_fit = emax_mu(orig["visit"].values, orig["race"].values,
-                 orig["base.pd.cent"].values, TRUE_PARAMS)
-resid  = orig["pdpch"].values - mu_fit
-TRUE_PARAMS["tau2"] = float(
-    np.sum(orig["n"].values * resid**2) / (orig["n"].sum() - 11)
-)
-
-print("Fitted parameters:")
+print("Using published-figure true parameters:")
 for k, v in TRUE_PARAMS.items():
     print(f"  {k:8s} = {v:.6f}")
-print(f"Convergence: {res.success}  (message: {res.message})\n")
+print()
+
+# Load scenario.csv only to confirm column layout; not used for fitting.
+if os.path.exists("scenario.csv"):
+    raw = pd.read_csv("scenario.csv", header=0)
+    if "pdpch.1" in raw.columns:
+        raw = raw.rename(columns={"pdpch": "pdch", "pdpch.1": "pdpch"})
+    orig = raw.dropna(subset=["pdpch"]).copy()
+    print(f"Reference data scenario.csv loaded: {len(orig)} rows.\n")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
