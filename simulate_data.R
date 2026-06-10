@@ -407,7 +407,9 @@ cat("Written: simulated_data.csv\n")
 cat("\nMean pdpch by source and visit (non-missing):\n")
 agg <- aggregate(pdpch ~ source + visit, data = simdata, FUN = mean)
 agg <- agg[order(agg$source, agg$visit), ]
-print(round(agg, 3))
+agg$visit <- round(agg$visit, 3)
+agg$pdpch <- round(agg$pdpch, 3)
+print(agg)
 
 
 # ============================================================
