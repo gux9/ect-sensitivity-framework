@@ -1,0 +1,13 @@
+# Generated outputs — keep local, do not push
+simulated_data.csv
+ect_source_trajectories.png
+
+# R runtime artefacts
+nimble_compiled/
+Sensitivity_results.RData
+*.Rhistory
+.Rdata
+
+# Python cache
+__pycache__/
+*.pyc
