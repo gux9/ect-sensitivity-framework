@@ -1,19 +1,17 @@
 """
 simulate_and_plot.py
 ====================
-1. Fit the Emax + linear longitudinal model to scenario.csv via weighted
-   least-squares (mirrors simulate_data.R).
-2. Simulate fully synthetic data at increased sample sizes and write
-   simulated_data.csv.
-3. Produce a publication-quality line plot (mean ± 1 SD band) for all
-   five data sources and save as ect_source_trajectories.png.
+Read simulated_data.csv (produced by simulate_data.py) and produce a
+publication-quality line plot (mean ± 1 SD band per data source).
 
-Output files (kept local, NOT committed to the repo):
-    simulated_data.csv
-    ect_source_trajectories.png
+Run:
+    python3 simulate_and_plot.py
+
+Input  (must exist):  simulated_data.csv
+Output (kept local):  ect_source_trajectories.png
 """
 
-import os
+import sys
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -21,239 +19,27 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
-import warnings
-warnings.filterwarnings("ignore")
-
-rng = np.random.default_rng(2025)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 0. Emax + linear mean function  (manuscript Eq. 2)
+# 1. Load data
 # ──────────────────────────────────────────────────────────────────────────────
 
-def emax_mu(x, race, z, p):
-    """
-    x    : visit day (scalar or array)
-    race : 0 = Non-Asian, 1 = Asian
-    z    : centred baseline PD
-    p    : dict of model parameters
-    """
-    r_i    = np.maximum(p["r1"]  + p["dr1"]  * race, 1e-6)
-    ed50_i = np.maximum(p["ed50"] + p["ded50"] * race, 1e-6)
+CSV_PATH = "simulated_data.csv"
 
-    xr   = np.power(x, r_i)
-    d50r = np.power(ed50_i, r_i)
+if not pd.io.common.file_exists(CSV_PATH):
+    sys.exit(f"ERROR: {CSV_PATH} not found. Run simulate_data.py first.")
 
-    return (
-        (p["e0"] + p["de0"] * race)
-        + p["a"] * z
-        + (p["k"] + p["dk"] * race) * x
-        + (p["emax"] + p["demax"] * race) * xr / (d50r + xr)
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 1. True longitudinal parameters (from the published fitted curves)
-# ──────────────────────────────────────────────────────────────────────────────
-#
-# Truth is taken from the published model-fitted IOP % change figure, NOT
-# from a fresh fit to the raw rows.  An unconstrained fit to the sparse,
-# noisy raw data collapses to a degenerate solution (ED50 -> 0, wrong-sign
-# Emax) that yields a flat, monotone curve.  The published Emax + linear
-# fit has the characteristic shape: deep day-1 drop, sharp recovery to a
-# peak near day 84, then a gradual decline, with the Asian arm starting
-# slightly deeper and declining more steeply late.  These constants
-# reproduce that figure and match Sensitivity_analysis.R (manuscript Eq. 2).
-
-TRUE_PARAMS = {
-    "e0"   : -0.66,      # day-0 intercept (deep initial lowering)
-    "emax" :  0.42,      # recovery magnitude toward the plateau
-    "ed50" :  8.0,       # day at which half the recovery is reached
-    "r1"   :  1.3,       # Hill / steepness of the recovery
-    "k"    : -0.00028,   # slow long-term decline (Non-Asian)
-    "a"    : -0.010,     # baseline-PD covariate effect (centred)
-    "de0"  : -0.04,      # Asian: deeper initial drop
-    "demax":  0.05,      # Asian: larger recovery -> same peak
-    "ded50":  0.0,       # Asian: same half-recovery time
-    "dr1"  :  0.0,       # Asian: same steepness
-    "dk"   : -0.00012,   # Asian: steeper long-term decline
-    "tau2" :  0.0025,    # residual variance (per single observation)
-}
-
-print("Using published-figure true parameters:")
-for k, v in TRUE_PARAMS.items():
-    print(f"  {k:8s} = {v:.6f}")
+simdata = pd.read_csv(CSV_PATH)
+print(f"Loaded {CSV_PATH}: {len(simdata)} rows")
+print(simdata.groupby(["source", "race"]).size().to_string())
 print()
 
-# Load scenario.csv only to confirm column layout; not used for fitting.
-if os.path.exists("scenario.csv"):
-    raw = pd.read_csv("scenario.csv", header=0)
-    if "pdpch.1" in raw.columns:
-        raw = raw.rename(columns={"pdpch": "pdch", "pdpch.1": "pdpch"})
-    orig = raw.dropna(subset=["pdpch"]).copy()
-    print(f"Reference data scenario.csv loaded: {len(orig)} rows.\n")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 2. Simulation design
-# ──────────────────────────────────────────────────────────────────────────────
-
-N_GNA  = 100   # Global Non-Asian  IPD
-N_GA   =  25   # Global Asian      IPD
-N_RWE  =  60   # RWE Asian         IPD
-N_PUB1 = 100   # Publication 1     aggregate
-N_PUB2 =  80   # Publication 2     aggregate
-
-VISITS_GLOBAL = [1, 7, 14, 28, 84, 168, 224, 280, 336]
-VISITS_RWE    = [1, 7, 28, 84, 168, 224, 280, 336]
-VISITS_PUB1   = [1, 7, 28, 84, 168]
-VISITS_PUB2   = [1, 7, 28, 84, 168, 336]
-
-MISS_EARLY = 0.03   # days 1–28
-MISS_LATE  = 0.08   # days 84+
-
-PUB1_BASE = 20.0
-PUB2_BASE = 22.0
-
-BASE_DISTS = {
-    "Global_NonAsian": (24.0, 4.5),
-    "Global_Asian"   : (23.5, 4.0),
-    "RWE"            : (28.0, 9.0),
-}
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 3. Draw baselines and compute grand centering mean
-# ──────────────────────────────────────────────────────────────────────────────
-
-def draw_baselines(n, mean_b, sd_b):
-    return np.maximum(rng.normal(mean_b, sd_b, n), 5.0)
-
-rng = np.random.default_rng(2025)   # reset for reproducibility
-base_gna = draw_baselines(N_GNA, *BASE_DISTS["Global_NonAsian"])
-base_ga  = draw_baselines(N_GA,  *BASE_DISTS["Global_Asian"])
-base_rwe = draw_baselines(N_RWE, *BASE_DISTS["RWE"])
-
-all_ipd   = np.concatenate([base_gna, base_ga, base_rwe])
-pub_bases = np.concatenate([np.full(N_PUB1, PUB1_BASE),
-                            np.full(N_PUB2, PUB2_BASE)])
-GLOBAL_BASE_MEAN = np.mean(np.concatenate([all_ipd, pub_bases]))
-print(f"Global baseline mean for centering: {GLOBAL_BASE_MEAN:.4f}\n")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 4. IPD simulation helper
-# ──────────────────────────────────────────────────────────────────────────────
-
-def sim_ipd(n_patients, baselines, race_val, study_val, source_label,
-            pid_prefix, visits):
-    rows = []
-    sd = np.sqrt(TRUE_PARAMS["tau2"])
-    for i in range(n_patients):
-        pid_i  = f"{pid_prefix}-{i+1:03d}"
-        base_i = round(float(baselines[i]), 3)
-        z_i    = base_i - GLOBAL_BASE_MEAN
-
-        for v in visits:
-            miss_p = MISS_EARLY if v <= 28 else MISS_LATE
-            if rng.random() < miss_p:
-                continue
-
-            mu_i     = emax_mu(v, race_val, z_i, TRUE_PARAMS)
-            pdpch_i  = float(rng.normal(mu_i, sd))
-            pd_i     = base_i * (1 + pdpch_i)
-            pdch_i   = pd_i - base_i
-
-            rows.append({
-                "pid"         : pid_i,
-                "study"       : study_val,
-                "visit"       : v,
-                "n"           : 1,
-                "race"        : race_val,
-                "base.pd"     : base_i,
-                "pd"          : round(pd_i,    4),
-                "pdch"        : round(pdch_i,  4),
-                "pdpch"       : round(pdpch_i, 6),
-                "source"      : source_label,
-                "base.pd.cent": round(z_i,     6),
-            })
-    return pd.DataFrame(rows)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 5. Simulate IPD sources
-# ──────────────────────────────────────────────────────────────────────────────
-
-print("Simulating IPD data …")
-dat_gna = sim_ipd(N_GNA, base_gna, 0, 0, "Global_NonAsian", "GNA", VISITS_GLOBAL)
-dat_ga  = sim_ipd(N_GA,  base_ga,  1, 0, "Global_Asian",    "GA",  VISITS_GLOBAL)
-dat_rwe = sim_ipd(N_RWE, base_rwe, 1, 1, "RWE",             "RWE", VISITS_RWE)
-
-print(f"  Global_NonAsian : {len(dat_gna)} rows  ({N_GNA} patients)")
-print(f"  Global_Asian    : {len(dat_ga)}  rows  ({N_GA} patients)")
-print(f"  RWE             : {len(dat_rwe)} rows  ({N_RWE} patients)")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 6. Simulate aggregate publication data
-# ──────────────────────────────────────────────────────────────────────────────
-
-def sim_aggregate(pub_label, study_val, n_agg, base_mean_pub, visits_pub):
-    z_pub  = base_mean_pub - GLOBAL_BASE_MEAN
-    sd_agg = np.sqrt(TRUE_PARAMS["tau2"] / n_agg)
-    rows   = []
-    for v in visits_pub:
-        mu_v    = emax_mu(v, 1, z_pub, TRUE_PARAMS)
-        pdpch_v = float(rng.normal(mu_v, sd_agg))
-        pd_v    = base_mean_pub * (1 + pdpch_v)
-        pdch_v  = pd_v - base_mean_pub
-        rows.append({
-            "pid"         : pub_label,
-            "study"       : study_val,
-            "visit"       : v,
-            "n"           : n_agg,
-            "race"        : 1,
-            "base.pd"     : base_mean_pub,
-            "pd"          : round(pd_v,    4),
-            "pdch"        : round(pdch_v,  4),
-            "pdpch"       : round(pdpch_v, 6),
-            "source"      : pub_label,
-            "base.pd.cent": round(z_pub,   6),
-        })
-    return pd.DataFrame(rows)
-
-print("Simulating aggregate publication data …")
-dat_pub1 = sim_aggregate("Pub1", 1, N_PUB1, PUB1_BASE, VISITS_PUB1)
-dat_pub2 = sim_aggregate("Pub2", 2, N_PUB2, PUB2_BASE, VISITS_PUB2)
-
-print(f"  Pub1 : {len(dat_pub1)} summary rows  (n = {N_PUB1})")
-print(f"  Pub2 : {len(dat_pub2)} summary rows  (n = {N_PUB2})")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 7. Combine and write CSV
-# ──────────────────────────────────────────────────────────────────────────────
-
 SOURCE_ORDER = ["Global_NonAsian", "Global_Asian", "RWE", "Pub1", "Pub2"]
-simdata = pd.concat([dat_gna, dat_ga, dat_rwe, dat_pub1, dat_pub2],
-                    ignore_index=True)
-simdata["source"] = pd.Categorical(simdata["source"], categories=SOURCE_ORDER)
-simdata = simdata.sort_values(["source", "pid", "visit"]).reset_index(drop=True)
-simdata["source"] = simdata["source"].astype(str)
-
-print(f"\nFinal dataset: {len(simdata)} rows")
-print(simdata.groupby(["source","race"]).size().to_string())
-
-simdata.to_csv("simulated_data.csv", index=False)
-print("\nWritten: simulated_data.csv")
-
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8. Plotting
+# 2. Colour / style palette
 # ──────────────────────────────────────────────────────────────────────────────
 
-print("\nBuilding plot …")
-
-# ── Colour / style palette ──────────────────────────────────────────────────
 PALETTE = {
     "Global_NonAsian": "#2166AC",   # blue
     "Global_Asian"   : "#D6604D",   # red-orange
@@ -261,45 +47,53 @@ PALETTE = {
     "Pub1"           : "#8B5CF6",   # purple
     "Pub2"           : "#F59E0B",   # amber
 }
-# Build legend labels dynamically from the simulated dataset so that the
-# figure always reflects the actual patient / subject counts, regardless
-# of what sample sizes were used during simulation.
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. Build legend labels dynamically from the data
+# ──────────────────────────────────────────────────────────────────────────────
+
+PREFIX = {
+    "Global_NonAsian": "Global – Non-Asian",
+    "Global_Asian"   : "Global – Asian",
+    "RWE"            : "RWE – Asian",
+    "Pub1"           : "Publication 1 – Asian",
+    "Pub2"           : "Publication 2 – Asian",
+}
+
 def make_label(df, source):
-    sub = df[df["source"] == source]
+    sub    = df[df["source"] == source]
     is_agg = sub["n"].max() > 1
-    prefix = {
-        "Global_NonAsian": "Global – Non-Asian",
-        "Global_Asian"   : "Global – Asian",
-        "RWE"            : "RWE – Asian",
-        "Pub1"           : "Publication 1 – Asian",
-        "Pub2"           : "Publication 2 – Asian",
-    }[source]
     if is_agg:
         n = int(sub["n"].iloc[0])
-        return f"{prefix}  (n = {n} aggregate)"
+        return f"{PREFIX[source]}  (n = {n} aggregate)"
     else:
         n = sub["pid"].nunique()
-        return f"{prefix}  (N = {n} IPD)"
+        return f"{PREFIX[source]}  (N = {n} IPD)"
 
 LABELS = {src: make_label(simdata, src) for src in SOURCE_ORDER}
 
-# ── Compute summary stats per source × visit ────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. Summary statistics per source × visit
+# ──────────────────────────────────────────────────────────────────────────────
+
 def source_summary(df, source):
-    sub = df[df["source"] == source]
-    grp = sub.groupby("visit")["pdpch"]
-
-    # For IPD sources: mean ± 1 SD across patients at each visit
-    # For aggregate sources: the single summary value; SD from model SE
+    """Return (mean_series, std_series) indexed by visit day."""
+    sub    = df[df["source"] == source]
+    grp    = sub.groupby("visit")["pdpch"]
     mean_v = grp.mean()
-    std_v  = grp.std()
-
-    # For aggregate rows n > 1: the single row IS the mean; SD = sqrt(tau2/n)
-    if sub["n"].max() > 1:
-        n_val = sub["n"].iloc[0]
-        std_v = np.sqrt(TRUE_PARAMS["tau2"] / n_val)
-        std_v = pd.Series(std_v, index=mean_v.index)
-
+    is_agg = sub["n"].max() > 1
+    if is_agg:
+        # Aggregate row: SD = sqrt(tau2 / n) derived from within-visit spread
+        std_v = grp.std().fillna(sub["pdpch"].std())
+    else:
+        std_v = grp.std()
     return mean_v, std_v
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5. Draw the plot
+# ──────────────────────────────────────────────────────────────────────────────
+
+all_visits = sorted(simdata["visit"].unique())
 
 fig, ax = plt.subplots(figsize=(10, 6))
 
@@ -307,66 +101,51 @@ for src in SOURCE_ORDER:
     mean_v, std_v = source_summary(simdata, src)
     visits = mean_v.index.values
     m      = mean_v.values
-    s      = std_v.values if hasattr(std_v, "values") else np.full_like(m, std_v)
+    s      = std_v.values
     col    = PALETTE[src]
+    is_agg = simdata.loc[simdata["source"] == src, "n"].max() > 1
+    ls     = "--" if is_agg else "-"
+    mk     = "s"  if is_agg else "o"
+    mks    = 5    if is_agg else 4
 
-    # Band (±1 SD)
     ax.fill_between(visits, m - s, m + s,
                     alpha=0.15, color=col, linewidth=0)
-
-    # Mean line
-    is_aggregate = simdata.loc[simdata["source"] == src, "n"].max() > 1
-    ls  = "--" if is_aggregate else "-"
-    mk  = "s" if is_aggregate else "o"
-    mks = 5   if is_aggregate else 4
-
     ax.plot(visits, m, color=col, linewidth=2,
             linestyle=ls, marker=mk, markersize=mks,
             label=LABELS[src], zorder=3)
 
-# ── Axes formatting ─────────────────────────────────────────────────────────
+# Axes
 ax.axhline(0, color="black", linewidth=0.8, linestyle=":", alpha=0.6)
-
 ax.set_xlabel("Visit (day)", fontsize=12)
 ax.set_ylabel("Mean % change from baseline (± 1 SD)", fontsize=12)
 ax.set_title("Simulated longitudinal response by data source\n"
              "ECT sensitivity analysis framework — synthetic data",
              fontsize=13, fontweight="bold")
-
-ax.set_xticks(sorted(set(VISITS_GLOBAL + VISITS_RWE + VISITS_PUB1 + VISITS_PUB2)))
-ax.set_xticklabels(sorted(set(VISITS_GLOBAL + VISITS_RWE + VISITS_PUB1 + VISITS_PUB2)),
-                   rotation=45, ha="right")
+ax.set_xticks(all_visits)
+ax.set_xticklabels(all_visits, rotation=45, ha="right")
 ax.set_xlim(-5, 350)
 ax.tick_params(labelsize=10)
 ax.grid(axis="y", linestyle="--", alpha=0.35)
 
-# ── Legend (two groups: IPD vs aggregate) ───────────────────────────────────
-ipd_handles  = []
-agg_handles  = []
+# Legend — IPD sources first, then aggregate
+ipd_handles, agg_handles = [], []
 for src in SOURCE_ORDER:
     is_agg = simdata.loc[simdata["source"] == src, "n"].max() > 1
     col = PALETTE[src]
-    ls  = "--" if is_agg else "-"
-    mk  = "s" if is_agg else "o"
-    h = Line2D([0], [0], color=col, linewidth=2, linestyle=ls,
-               marker=mk, markersize=6, label=LABELS[src])
+    h = Line2D([0], [0], color=col, linewidth=2,
+               linestyle="--" if is_agg else "-",
+               marker="s" if is_agg else "o",
+               markersize=6, label=LABELS[src])
     (agg_handles if is_agg else ipd_handles).append(h)
 
-band_note = mpatches.Patch(facecolor="grey", alpha=0.25,
-                           label="±1 SD band")
-all_handles = ipd_handles + agg_handles + [band_note]
+band_note = mpatches.Patch(facecolor="grey", alpha=0.25, label="±1 SD band")
 
-ax.legend(handles=all_handles,
-          title="Data source",
-          title_fontsize=10,
-          fontsize=9,
-          loc="lower right",
-          framealpha=0.9,
-          edgecolor="#cccccc")
+ax.legend(handles=ipd_handles + agg_handles + [band_note],
+          title="Data source", title_fontsize=10,
+          fontsize=9, loc="lower right",
+          framealpha=0.9, edgecolor="#cccccc")
 
 plt.tight_layout()
 plt.savefig("ect_source_trajectories.png", dpi=150, bbox_inches="tight")
 print("Written: ect_source_trajectories.png")
 plt.close()
-
-print("\nDone.")
