@@ -261,13 +261,27 @@ PALETTE = {
     "Pub1"           : "#8B5CF6",   # purple
     "Pub2"           : "#F59E0B",   # amber
 }
-LABELS = {
-    "Global_NonAsian": "Global – Non-Asian  (N = 100 IPD)",
-    "Global_Asian"   : "Global – Asian  (N = 25 IPD)",
-    "RWE"            : "RWE – Asian  (N = 60 IPD)",
-    "Pub1"           : "Publication 1 – Asian  (n = 100 aggregate)",
-    "Pub2"           : "Publication 2 – Asian  (n = 80 aggregate)",
-}
+# Build legend labels dynamically from the simulated dataset so that the
+# figure always reflects the actual patient / subject counts, regardless
+# of what sample sizes were used during simulation.
+def make_label(df, source):
+    sub = df[df["source"] == source]
+    is_agg = sub["n"].max() > 1
+    prefix = {
+        "Global_NonAsian": "Global – Non-Asian",
+        "Global_Asian"   : "Global – Asian",
+        "RWE"            : "RWE – Asian",
+        "Pub1"           : "Publication 1 – Asian",
+        "Pub2"           : "Publication 2 – Asian",
+    }[source]
+    if is_agg:
+        n = int(sub["n"].iloc[0])
+        return f"{prefix}  (n = {n} aggregate)"
+    else:
+        n = sub["pid"].nunique()
+        return f"{prefix}  (N = {n} IPD)"
+
+LABELS = {src: make_label(simdata, src) for src in SOURCE_ORDER}
 
 # ── Compute summary stats per source × visit ────────────────────────────────
 def source_summary(df, source):
