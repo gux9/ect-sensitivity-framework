@@ -11,3 +11,9 @@ Sensitivity_results.RData
 # Python cache
 __pycache__/
 *.pyc
+
+# LaTeX build artefacts
+*.aux
+*.log
+*.out
+*.synctex.gz
