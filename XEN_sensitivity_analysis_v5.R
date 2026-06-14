@@ -731,24 +731,26 @@ build_primary_inputs <- function(dat) {
 #     scalar RW sampler — they mix near-perfectly (ESS ~100k).
 .install_xen_samplers <- function(mcmcConf, node_tops) {
 
-  # [v10] Sampler strategy after log reparameterization of ed50/r1:
+  # [v11] Sampler strategy after diagnosing the v10 ESS pattern:
+  #   log_ed50/log_ed50_a cleared 500 as scalars (697/1427), but emax (94),
+  #   log_r1 (133), e0 (192) stayed stuck.  Cause: emax is correlated with
+  #   log_r1 through the Emax curve, but log_r1 sat OUTSIDE the level block.
+  #   ED50 decoupled because it mixes fast; r1 is the slow partner trapping
+  #   emax.  Fix: put the slow, mutually-correlated parameters in ONE block.
   #
-  #   log_ed50, log_ed50_a, log_r1, log_r1_a  → scalar RW (default, kept).
-  #     These are now unconstrained with near-Gaussian marginals; default
-  #     scalar AM adapts well without any special configuration.
-  #
-  #   (e0, de0, emax, demax)  → 4-parameter RW_block.
-  #     These four remain correlated through the Emax mean function
-  #     (e0↔emax negative correlation, de0↔demax linked).  A 4×4 block
-  #     is small enough for AM to adapt reliably at 50k burnin.
-  #
-  #   k, dk, a, tau2  → default scalar RW (ESS ~100k, no change needed).
-
-  emax_level_block <- c("e0", "de0", "emax", "demax")
-  available_level  <- intersect(emax_level_block, node_tops)
-  if (length(available_level) >= 2) {
-    mcmcConf$removeSamplers(available_level)
-    mcmcConf$addSampler(target = available_level, type = "RW_block")
+  #   Block (8 params): e0, de0, emax, demax, k, dk, log_r1, log_r1_a
+  #     — all unconstrained/Gaussian after the v10 log reparam, so the AM
+  #       block adapts cleanly (the v9 block failed only because ed50/r1
+  #       truncation boundaries broke the Gaussian proposal; that is gone).
+  #   Scalar (default): log_ed50, log_ed50_a (already fast), a, tau2
+  #     — leaving the fast-mixing ED50 pair out keeps the block lower-
+  #       dimensional, which improves AM efficiency.
+  emax_block <- c("e0", "de0", "emax", "demax",
+                  "k", "dk", "log_r1", "log_r1_a")
+  available  <- intersect(emax_block, node_tops)
+  if (length(available) >= 2) {
+    mcmcConf$removeSamplers(available)
+    mcmcConf$addSampler(target = available, type = "RW_block")
   }
 
   invisible(mcmcConf)
@@ -766,22 +768,32 @@ build_primary_inputs <- function(dat) {
   
   model <- nimbleModel(code, constants = constants, data = data,
                        inits = inits, check = FALSE)
-  node_names <- model$getNodeNames(stochOnly = TRUE, includeData = FALSE)
-  node_tops  <- unique(gsub("\\[.*", "", node_names))
-  monitors   <- intersect(monitors, node_tops)
-  
+  # [v11] BUG FIX: monitors must be validated against ALL nodes (including
+  # deterministic ones), not just stochastic.  Since v10 made ed50/ded50/
+  # r1/dr1 DETERMINISTIC, filtering by stochOnly silently dropped them,
+  # which broke compute_fitted_curves() (samps$ed50 = NULL → colMeans
+  # error) and every downstream PPC/plot step.  Sampler install still
+  # uses stochastic-only tops (you cannot sample a deterministic node).
+  stoch_tops <- unique(gsub("\\[.*", "",
+                  model$getNodeNames(stochOnly = TRUE, includeData = FALSE)))
+  all_tops   <- unique(gsub("\\[.*", "",
+                  model$getNodeNames(includeData = FALSE)))
+  monitors   <- intersect(monitors, all_tops)
+
   cModel    <- compileNimble(model)
   mcmcConf  <- configureMCMC(model, monitors = monitors, enableWAIC = FALSE)
-  
-  # [v10] Install samplers — inlined from .install_xen_samplers.
-  # After log reparameterization, only the Emax level block is needed.
-  emax_level_block <- c("e0", "de0", "emax", "demax")
-  available_level  <- intersect(emax_level_block, node_tops)
-  if (length(available_level) >= 2) {
-    mcmcConf$removeSamplers(available_level)
-    mcmcConf$addSampler(target = available_level, type = "RW_block")
+
+  # [v11] Install samplers — inlined from .install_xen_samplers (worker
+  # processes cannot serialize the helper).  8-parameter block over the
+  # slow, mutually-correlated mean-function parameters.
+  emax_block <- c("e0", "de0", "emax", "demax",
+                  "k", "dk", "log_r1", "log_r1_a")
+  available  <- intersect(emax_block, stoch_tops)
+  if (length(available) >= 2) {
+    mcmcConf$removeSamplers(available)
+    mcmcConf$addSampler(target = available, type = "RW_block")
   }
-  
+
   mcmc  <- buildMCMC(mcmcConf)
   cMCMC <- compileNimble(mcmc, project = model)
   
@@ -790,65 +802,50 @@ build_primary_inputs <- function(dat) {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ESS TROUBLESHOOTING LADDER  (activate in order if ESS < 500 persists)
+# ESS TROUBLESHOOTING LADDER  (status after each diagnostic run)
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# [v9 — ACTIVE] Fix 1: Single merged 8-parameter RW_block.
-#   Already implemented in .install_xen_samplers above.
-#   Try this first: run the script, check ESS.  If still < 500 → Fix 2.
+# [v9 — SUPERSEDED] Fix 1: merged 8-parameter RW_block.
+#   Made ESS WORSE (ed50→5) because the truncated ed50/r1 boundaries broke
+#   the block's Gaussian proposal.  Removed.
 #
-# Fix 2: Log reparameterization of ed50, r1, and their ethnic offsets.
-#   Why: r1 and ed50 are strictly positive with skewed posteriors.
-#   Sampling on the log scale removes the right-skew and eliminates
-#   truncated-normal constraints, which helps AM adaptation enormously.
+# [v10 — ACTIVE] Fix 2: Log reparameterization of ed50, r1, offsets.
+#   Implemented in all model blocks.  RESULT: log_ed50 (697) and
+#   log_ed50_a (1427) cleared 500; but emax (94), log_r1 (133), e0 (192)
+#   stayed low because log_r1 was outside the level block.
 #
-#   Replace in code_primary (and all other model blocks):
+# [v11 — ACTIVE] Fix 2b: Block-membership fix.
+#   Put the slow, correlated params in ONE log-scale block:
+#     (e0, de0, emax, demax, k, dk, log_r1, log_r1_a)
+#   log_ed50/log_ed50_a stay scalar (already fast).  Targets the
+#   emax↔log_r1↔e0 ridge directly.  RUN THIS, then re-check ESS.
+#   If emax / log_r1 still < 500 → Fix 3 (NUTS).
 #
-#     # REMOVE these lines:
-#     ed50  ~ T(dnorm(10, sd = sqrt(10)), 0, )
-#     r1    ~ T(dnorm(0,  sd = 10),       0, )
-#     ded50 ~ T(dnorm(0,  sd = sqrt(10)), -ed50, )
-#     dr1   ~ T(dnorm(0,  sd = 10),       -r1,   )
+# Fix 3: NUTS (No-U-Turn Sampler) via nimbleHMC — FINAL, GUARANTEED.
+#   NUTS uses gradients to traverse the ridge in one step; it solves
+#   Emax-model mixing regardless of correlation.  Apply to the PRIMARY
+#   model only (and any single problem fit), NOT blanket, because:
+#     - the PIECEWISE model uses step() → non-differentiable → NUTS fails;
+#     - the ROBUST-MAP model uses the custom dRobustNorm → no derivatives.
+#   For those two, keep the RW_block path.
 #
-#     # REPLACE WITH:
-#     log_ed50       ~ dnorm(log(10), sd = 1)     # prior on log scale
-#     ed50           <- exp(log_ed50)              # deterministic
-#     log_ed50_asian ~ dnorm(log(10), sd = 1)
-#     ed50_asian     <- exp(log_ed50_asian)
-#     ded50          <- ed50_asian - ed50          # ed50+ded50 = exp(...) > 0
-#
-#     log_r1         ~ dnorm(0, sd = 1)
-#     r1             <- exp(log_r1)
-#     log_r1_asian   ~ dnorm(0, sd = 1)
-#     r1_asian       <- exp(log_r1_asian)
-#     dr1            <- r1_asian - r1
-#
-#   Inits change: replace ed50=10, ded50=1, r1=1, dr1=0.1 with
-#     log_ed50=log(10), log_ed50_asian=log(11), log_r1=0, log_r1_asian=log(1.1)
-#
-#   This change must be applied to ALL model code blocks (primary,
-#   emax_only, piecewise, power_prior, commensurate, robust_map, and
-#   the vague/informative prior variants).  If ESS still < 500 → Fix 3.
-#
-# Fix 3: NUTS (No-U-Turn Sampler) via nimbleHMC.
-#   NUTS uses gradient information to propose moves that traverse the
-#   ridge in one step; it is essentially guaranteed to solve Emax-model
-#   mixing regardless of correlation structure.
-#
-#   One-time setup:
+#   Setup (one time):
 #     install.packages("nimbleHMC")
 #
-#   In .install_xen_samplers, replace the RW_block block with:
-#     library(nimbleHMC)
-#     nuts_params <- intersect(c("e0","de0","emax","demax",
-#                                "ed50","ded50","r1","dr1","k","dk","a"),
-#                              node_tops)
-#     mcmcConf$removeSamplers(nuts_params)
-#     mcmcConf$addSampler(target = nuts_params, type = "NUTS")
+#   In the SEQUENTIAL path, build the model with derivatives and use
+#   nimbleHMC's configurator (Fix 2's log reparam already removed the
+#   truncated priors that are incompatible with NUTS):
 #
-#   Note: NUTS is incompatible with truncated priors in nimble unless
-#   the log reparameterization (Fix 2) is also applied.  If you install
-#   nimbleHMC, apply Fix 2 first, then swap in NUTS.
+#     model <- nimbleModel(code, constants = constants, data = data,
+#                          inits = inits, check = FALSE, buildDerivs = TRUE)
+#     mcmcConf <- nimbleHMC::configureHMC(model, monitors = monitors)
+#     # configureHMC puts NUTS on all continuous nodes automatically.
+#
+#   NUTS needs FAR fewer iterations (it is near-i.i.d.).  Call run_nimble
+#   with nBurnin = 1000, nIter = 2000, nThin = 1 — that typically yields
+#   ESS > 1000 and runs in a few minutes per chain despite the higher
+#   per-iteration cost.  Do NOT run NUTS at 50000 iters (it would be
+#   needlessly slow).
 # ─────────────────────────────────────────────────────────────────────────────
 
 run_nimble <- function(code, constants, data, inits,
@@ -984,15 +981,20 @@ run_nimble <- function(code, constants, data, inits,
   # ------------------------------------------------------------------- #
   model <- nimbleModel(code, constants = constants, data = data,
                        inits = inits, check = FALSE)
-  
-  node_names <- model$getNodeNames(stochOnly = TRUE, includeData = FALSE)
-  node_tops  <- unique(gsub("\\[.*", "", node_names))
-  monitors   <- intersect(monitors, node_tops)
-  
+
+  # [v11] BUG FIX (see parallel path): validate monitors against ALL nodes
+  # so deterministic ed50/ded50/r1/dr1 are retained; install samplers
+  # against stochastic-only tops.
+  stoch_tops <- unique(gsub("\\[.*", "",
+                  model$getNodeNames(stochOnly = TRUE, includeData = FALSE)))
+  all_tops   <- unique(gsub("\\[.*", "",
+                  model$getNodeNames(includeData = FALSE)))
+  monitors   <- intersect(monitors, all_tops)
+
   cModel   <- compileNimble(model)
   mcmcConf <- configureMCMC(model, monitors = monitors,
                             enableWAIC = enableWAIC)
-  .install_xen_samplers(mcmcConf, node_tops)
+  .install_xen_samplers(mcmcConf, stoch_tops)
   
   mcmc  <- buildMCMC(mcmcConf)
   cMCMC <- compileNimble(mcmc, project = model)
@@ -1282,20 +1284,21 @@ print_rounded(primary_summary, 4)
 df_to_latex(primary_summary, rownames=TRUE, file = "Primary_analysis_table.tex")
 
 # [v8] ESS check — warn early if any parameter is below 500.
-# If ESS is still low, increase nBurnin (better adaptation) rather than
-# nIter; the block sampler needs sufficient burnin to tune its proposal
-# covariance for the e0/emax/de0/demax correlation ridge.
-cat("\n[v8] ESS check (primary):\n")
+# [v11] ESS diagnostics report the STOCHASTIC nodes (log_ed50, log_r1,
+# emax, ...).  Deterministic ed50/ded50/r1/dr1 inherit their parents' ESS.
+cat("\n[v11] ESS check (primary):\n")
 ess_primary <- coda::effectiveSize(mcmc_primary)
 print(round(ess_primary, 0))
 low_ess <- names(ess_primary)[ess_primary < 500]
 if (length(low_ess) > 0) {
   warning(
-    "[v8] ESS < 500 for: ", paste(low_ess, collapse = ", "), "\n",
-    "  Recommended fix: increase nBurnin further (try 100000) so the\n",
-    "  RW_block sampler has more time to tune its proposal covariance.\n",
-    "  Do NOT just add more post-burnin iterations — that helps less\n",
-    "  than better adaptation when the chain is mixing poorly."
+    "[v11] ESS < 500 for: ", paste(low_ess, collapse = ", "), "\n",
+    "  RW_block has been tuned as far as it productively goes for this\n",
+    "  Emax ridge.  The guaranteed next step is NUTS (Fix 3 in the ESS\n",
+    "  TROUBLESHOOTING LADDER above): install.packages('nimbleHMC'),\n",
+    "  build the PRIMARY model with buildDerivs = TRUE, and use\n",
+    "  nimbleHMC::configureHMC() at nBurnin=1000, nIter=2000.\n",
+    "  Do NOT keep increasing RW iterations — it will not clear 500."
   )
 } else {
   cat("  All parameters: ESS >= 500. Convergence criteria met.\n")
