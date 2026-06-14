@@ -1140,6 +1140,46 @@ print_rounded(primary_summary, 4)
 
 df_to_latex(primary_summary, rownames=TRUE, file = "Primary_analysis_table.tex")
 
+# ---------------------------------------------------------------------------
+# Convergence diagnostics for the PRIMARY analysis (computed immediately so
+# that ESS / R-hat are available even if a later section crashes).
+#   - Gelman-Rubin R-hat (requires >= 2 chains)
+#   - Effective sample size (coda::effectiveSize) per monitored parameter
+# Results are printed to the console and written to
+# convergence_diagnostic_primary.txt.
+# ---------------------------------------------------------------------------
+cat("\n========== PRIMARY ANALYSIS — CONVERGENCE DIAGNOSTICS ==========\n")
+sink(file = "convergence_diagnostic_primary.txt")
+
+primary_ess <- effectiveSize(mcmc_primary)
+cat("\nEffective Sample Sizes (Primary Analysis):\n")
+print_rounded(primary_ess, 0)
+
+cat("\nParameters with ESS < 500:\n")
+low_ess <- primary_ess[primary_ess < 500]
+if (length(low_ess) > 0) {
+  print_rounded(low_ess, 0)
+} else {
+  cat("  None — all monitored parameters have ESS >= 500.\n")
+}
+
+if (length(mcmc_primary) >= 2) {
+  gr_primary <- gelman.diag(mcmc_primary, multivariate = FALSE)
+  cat("\nGelman-Rubin Statistics (Primary Analysis):\n")
+  print_rounded(gr_primary$psrf, 3)
+}
+sink()
+
+# Echo the ESS table to the console as well.
+cat("\nEffective Sample Sizes (Primary Analysis):\n")
+print_rounded(primary_ess, 0)
+if (length(low_ess) > 0) {
+  cat("\nWARNING: the following parameters have ESS < 500:\n")
+  print_rounded(low_ess, 0)
+} else {
+  cat("\nAll monitored parameters have ESS >= 500.\n")
+}
+
 save.image("Sensitivity_results.RData")
 
 
