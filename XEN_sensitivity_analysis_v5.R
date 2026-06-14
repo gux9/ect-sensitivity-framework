@@ -241,46 +241,32 @@ print(table(y.iop$source, y.iop$race))
 # ============================================================================ #
 
 code_primary <- nimbleCode({
-
+  
   for (i in 1:N) {
     y[i] ~ dnorm(mu[i], var = tau2 / n[i])
-
-    # [v10] ed50_a = Asian ED50, r1_a = Asian Hill coeff (log-scale params)
+    
     mu[i] <- e0 + de0 * race[i] + a * z[i] +
       (k + dk * race[i]) * x[i] +
-      (emax + demax * race[i]) * x[i]^(r1_a_sel[i]) /
-      (ed50_a_sel[i]^(r1_a_sel[i]) + x[i]^(r1_a_sel[i]))
-
-    # Select Asian or non-Asian ED50/r1 based on race indicator
-    ed50_a_sel[i]  <- ed50   * (1 - race[i]) + ed50_a  * race[i]
-    r1_a_sel[i]    <- r1     * (1 - race[i]) + r1_a    * race[i]
+      (emax + demax * race[i]) * x[i]^(r1 + dr1 * race[i]) /
+      ((ed50 + ded50 * race[i])^(r1 + dr1 * race[i]) +
+         x[i]^(r1 + dr1 * race[i]))
   }
-
-  # [v10] Log reparameterization of ed50, r1, and Asian counterparts.
-  # Samples unconstrained log-scale parameters; positivity guaranteed by exp().
-  # Replaces T(dnorm(...), 0, ) truncated priors that caused poor AM mixing.
-  # ed50_a and r1_a are the TOTAL Asian values; ded50 and dr1 are derived.
-  log_ed50   ~ dnorm(log(10), sd = 1)   # N(log10, 1) → ed50 ~ Lognormal(log10,1)
-  ed50       <- exp(log_ed50)
-  log_ed50_a ~ dnorm(log(10), sd = 1)   # Asian ED50 on same log scale
-  ed50_a     <- exp(log_ed50_a)
-  ded50      <- ed50_a - ed50            # derived; ed50_a > 0 by construction
-
-  log_r1     ~ dnorm(0, sd = 1)         # N(0,1) → r1 ~ Lognormal(0,1)
-  r1         <- exp(log_r1)
-  log_r1_a   ~ dnorm(0, sd = 1)         # Asian r1 on same log scale
-  r1_a       <- exp(log_r1_a)
-  dr1        <- r1_a - r1               # derived; r1_a > 0 by construction
-
-  # --- Priors (unchanged from primary) ---
-  e0    ~ dnorm(0, sd = sqrt(10))
-  emax  ~ dnorm(0, sd = 1)
-  k     ~ dnorm(0, sd = 10)
-  de0   ~ dnorm(0, sd = 1)
-  demax ~ dnorm(0, sd = 1)
-  dk    ~ dnorm(0, sd = sqrt(10))
-  a     ~ dnorm(0, sd = 10)
-  tau2  ~ dinvgamma(0.01, 0.01)
+  
+  # --- Priors (Report Section 2.2.1) ---
+  e0    ~ dnorm(0, sd = sqrt(10))    # N(0, 10)
+  emax  ~ dnorm(0, sd = 1)           # N(0, 1)
+  k     ~ dnorm(0, sd = 10)          # N(0, 100)
+  ed50  ~ T(dnorm(10, sd = sqrt(10)), 0, )   # N(10, 10) truncated > 0
+  r1    ~ T(dnorm(0, sd = 10), 0, )          # N(0, 100) truncated > 0
+  
+  de0   ~ dnorm(0, sd = 1)           # N(0, 1)
+  demax ~ dnorm(0, sd = 1)           # N(0, 1)
+  dk    ~ dnorm(0, sd = sqrt(10))    # N(0, 10)
+  ded50 ~ T(dnorm(0, sd = sqrt(10)), -ed50, )   # truncated so ed50+ded50 > 0
+  dr1   ~ T(dnorm(0, sd = 10), -r1, )           # truncated so r1+dr1 > 0
+  
+  a     ~ dnorm(0, sd = 10)          # N(0, 100)
+  tau2  ~ dinvgamma(0.01, 0.01)    # Inversegamma(0.01, 0.01) -- weakly informative
 })
 
 
@@ -289,35 +275,26 @@ code_primary <- nimbleCode({
 # ============================================================================ #
 
 code_emax_only <- nimbleCode({
-
+  
   for (i in 1:N) {
     y[i] ~ dnorm(mu[i], var = tau2 / n[i])
-
+    
     mu[i] <- e0 + de0 * race[i] + a * z[i] +
-      (emax + demax * race[i]) * x[i]^(r1_a_sel[i]) /
-      (ed50_a_sel[i]^(r1_a_sel[i]) + x[i]^(r1_a_sel[i]))
-
-    ed50_a_sel[i] <- ed50  * (1 - race[i]) + ed50_a * race[i]
-    r1_a_sel[i]   <- r1    * (1 - race[i]) + r1_a   * race[i]
+      (emax + demax * race[i]) * x[i]^(r1 + dr1 * race[i]) /
+      ((ed50 + ded50 * race[i])^(r1 + dr1 * race[i]) +
+         x[i]^(r1 + dr1 * race[i]))
   }
-
-  # [v10] Log reparameterization (same as primary, no k term)
-  log_ed50   ~ dnorm(log(10), sd = 1)
-  ed50       <- exp(log_ed50)
-  log_ed50_a ~ dnorm(log(10), sd = 1)
-  ed50_a     <- exp(log_ed50_a)
-  ded50      <- ed50_a - ed50
-
-  log_r1     ~ dnorm(0, sd = 1)
-  r1         <- exp(log_r1)
-  log_r1_a   ~ dnorm(0, sd = 1)
-  r1_a       <- exp(log_r1_a)
-  dr1        <- r1_a - r1
-
+  
   e0    ~ dnorm(0, sd = sqrt(10))
   emax  ~ dnorm(0, sd = 1)
+  ed50  ~ T(dnorm(10, sd = sqrt(10)), 0, )
+  r1    ~ T(dnorm(0, sd = 10), 0, )
+  
   de0   ~ dnorm(0, sd = 1)
   demax ~ dnorm(0, sd = 1)
+  ded50 ~ T(dnorm(0, sd = sqrt(10)), -ed50, )
+  dr1   ~ T(dnorm(0, sd = 10), -r1, )
+  
   a     ~ dnorm(0, sd = 10)
   tau2  ~ dinvgamma(0.01, 0.01)
 })
@@ -391,67 +368,53 @@ code_piecewise <- nimbleCode({
 # ============================================================================ #
 
 code_power_prior <- nimbleCode({
-
+  
   # --- IPD observations (P13-001 only, all n=1) ---
   for (i in 1:N_ipd) {
     y[i] ~ dnorm(mu[i], var = tau2)
-
+    
     mu[i] <- e0 + de0 * race[i] + a * z[i] +
       (k + dk * race[i]) * x[i] +
-      (emax + demax * race[i]) * x[i]^(r1_a_sel_ipd[i]) /
-      (ed50_a_sel_ipd[i]^(r1_a_sel_ipd[i]) + x[i]^(r1_a_sel_ipd[i]))
-
-    ed50_a_sel_ipd[i] <- ed50 * (1 - race[i]) + ed50_a * race[i]
-    r1_a_sel_ipd[i]   <- r1   * (1 - race[i]) + r1_a   * race[i]
+      (emax + demax * race[i]) * x[i]^(r1 + dr1 * race[i]) /
+      ((ed50 + ded50 * race[i])^(r1 + dr1 * race[i]) +
+         x[i]^(r1 + dr1 * race[i]))
   }
-
+  
   # --- RWE aggregate observations: FULL WEIGHT ---
   for (j in 1:N_rwe) {
     y_rwe[j] ~ dnorm(mu_rwe[j], var = tau2 / n_rwe[j])
-
+    
     mu_rwe[j] <- e0 + de0 * race_rwe[j] + a * z_rwe[j] +
       (k + dk * race_rwe[j]) * x_rwe[j] +
-      (emax + demax * race_rwe[j]) * x_rwe[j]^(r1_a_sel_rwe[j]) /
-      (ed50_a_sel_rwe[j]^(r1_a_sel_rwe[j]) + x_rwe[j]^(r1_a_sel_rwe[j]))
-
-    ed50_a_sel_rwe[j] <- ed50 * (1 - race_rwe[j]) + ed50_a * race_rwe[j]
-    r1_a_sel_rwe[j]   <- r1   * (1 - race_rwe[j]) + r1_a   * race_rwe[j]
+      (emax + demax * race_rwe[j]) * x_rwe[j]^(r1 + dr1 * race_rwe[j]) /
+      ((ed50 + ded50 * race_rwe[j])^(r1 + dr1 * race_rwe[j]) +
+         x_rwe[j]^(r1 + dr1 * race_rwe[j]))
   }
-
+  
   # --- Hu/Sng aggregate observations: DISCOUNTED by alpha0 ---
   for (m in 1:N_disc) {
     y_disc[m] ~ dnorm(mu_disc[m], var = tau2 / (n_disc[m] * alpha0))
-
+    
     mu_disc[m] <- e0 + de0 * race_disc[m] + a * z_disc[m] +
       (k + dk * race_disc[m]) * x_disc[m] +
-      (emax + demax * race_disc[m]) * x_disc[m]^(r1_a_sel_disc[m]) /
-      (ed50_a_sel_disc[m]^(r1_a_sel_disc[m]) + x_disc[m]^(r1_a_sel_disc[m]))
-
-    ed50_a_sel_disc[m] <- ed50 * (1 - race_disc[m]) + ed50_a * race_disc[m]
-    r1_a_sel_disc[m]   <- r1   * (1 - race_disc[m]) + r1_a   * race_disc[m]
+      (emax + demax * race_disc[m]) * x_disc[m]^(r1 + dr1 * race_disc[m]) /
+      ((ed50 + ded50 * race_disc[m])^(r1 + dr1 * race_disc[m]) +
+         x_disc[m]^(r1 + dr1 * race_disc[m]))
   }
-
+  
   # alpha0 is passed as data (fixed) for each scenario
-
-  # [v10] Log reparameterization (same as primary)
-  log_ed50   ~ dnorm(log(10), sd = 1)
-  ed50       <- exp(log_ed50)
-  log_ed50_a ~ dnorm(log(10), sd = 1)
-  ed50_a     <- exp(log_ed50_a)
-  ded50      <- ed50_a - ed50
-
-  log_r1     ~ dnorm(0, sd = 1)
-  r1         <- exp(log_r1)
-  log_r1_a   ~ dnorm(0, sd = 1)
-  r1_a       <- exp(log_r1_a)
-  dr1        <- r1_a - r1
-
+  
+  # --- Priors (same as primary) ---
   e0    ~ dnorm(0, sd = sqrt(10))
   emax  ~ dnorm(0, sd = 1)
   k     ~ dnorm(0, sd = 10)
+  ed50  ~ T(dnorm(10, sd = sqrt(10)), 0, )
+  r1    ~ T(dnorm(0, sd = 10), 0, )
   de0   ~ dnorm(0, sd = 1)
   demax ~ dnorm(0, sd = 1)
   dk    ~ dnorm(0, sd = sqrt(10))
+  ded50 ~ T(dnorm(0, sd = sqrt(10)), -ed50, )
+  dr1   ~ T(dnorm(0, sd = 10), -r1, )
   a     ~ dnorm(0, sd = 10)
   tau2  ~ dinvgamma(0.01, 0.01)
 })
@@ -481,56 +444,52 @@ code_power_prior <- nimbleCode({
 # ============================================================================ #
 
 code_commensurate <- nimbleCode({
-
+  
   # --- IPD block: P13-001 (both ethnicities) + RWE, full borrowing ---
   for (i in 1:N_ipd) {
     y[i] ~ dnorm(mu[i], var = tau2 / n[i])
-
+    
     mu[i] <- e0 + de0 * race[i] + a * z[i] +
       (k + dk * race[i]) * x[i] +
-      (emax + demax * race[i]) * x[i]^(r1_a_sel[i]) /
-      (ed50_a_sel[i]^(r1_a_sel[i]) + x[i]^(r1_a_sel[i]))
-
-    ed50_a_sel[i] <- ed50  * (1 - race[i]) + ed50_a * race[i]
-    r1_a_sel[i]   <- r1    * (1 - race[i]) + r1_a   * race[i]
+      (emax + demax * race[i]) * x[i]^(r1 + dr1 * race[i]) /
+      ((ed50 + ded50 * race[i])^(r1 + dr1 * race[i]) +
+         x[i]^(r1 + dr1 * race[i]))
   }
-
-  # --- External aggregate block: Hu and Sng (both Asian: use ed50_a, r1_a) ---
+  
+  # --- External aggregate block: Hu and Sng only ---
+  # Both sources are Asian (race_agg = 1 for all rows).  Source-specific
+  # e0_agg/emax_agg are anchored to the Asian population values via tau_c.
   for (j in 1:N_agg) {
     y_agg[j] ~ dnorm(mu_agg[j], var = tau2 / n_agg[j])
-
+    
     mu_agg[j] <- e0_agg[source_id[j]] + a * z_agg[j] +
       (k + dk) * x_agg[j] +
-      emax_agg[source_id[j]] * x_agg[j]^(r1_a) /
-      (ed50_a^(r1_a) + x_agg[j]^(r1_a))
+      emax_agg[source_id[j]] *
+      x_agg[j]^(r1 + dr1) /
+      ((ed50 + ded50)^(r1 + dr1) +
+         x_agg[j]^(r1 + dr1))
   }
-
+  
+  # Commensurate priors centred on Asian population parameters
   for (s in 1:N_sources) {
     e0_agg[s]   ~ dnorm(e0 + de0,     var = 1 / tau_c)
     emax_agg[s] ~ dnorm(emax + demax, var = 1 / tau_c)
   }
-
+  
+  # Commensurability parameter: large tau_c = strong borrowing
   tau_c ~ dgamma(1, 1)
-
-  # [v10] Log reparameterization
-  log_ed50   ~ dnorm(log(10), sd = 1)
-  ed50       <- exp(log_ed50)
-  log_ed50_a ~ dnorm(log(10), sd = 1)
-  ed50_a     <- exp(log_ed50_a)
-  ded50      <- ed50_a - ed50
-
-  log_r1     ~ dnorm(0, sd = 1)
-  r1         <- exp(log_r1)
-  log_r1_a   ~ dnorm(0, sd = 1)
-  r1_a       <- exp(log_r1_a)
-  dr1        <- r1_a - r1
-
+  
+  # --- Priors (same as primary) ---
   e0    ~ dnorm(0, sd = sqrt(10))
   emax  ~ dnorm(0, sd = 1)
   k     ~ dnorm(0, sd = 10)
+  ed50  ~ T(dnorm(10, sd = sqrt(10)), 0, )
+  r1    ~ T(dnorm(0, sd = 10), 0, )
   de0   ~ dnorm(0, sd = 1)
   demax ~ dnorm(0, sd = 1)
   dk    ~ dnorm(0, sd = sqrt(10))
+  ded50 ~ T(dnorm(0, sd = sqrt(10)), -ed50, )
+  dr1   ~ T(dnorm(0, sd = 10), -r1, )
   a     ~ dnorm(0, sd = 10)
   tau2  ~ dinvgamma(0.01, 0.01)
 })
@@ -585,28 +544,34 @@ registerDistributions(list(
 ))
 
 code_robust_map <- nimbleCode({
-
+  
   # ---- IPD block: P13-001 (both ethnicities) + RWE ----
+  # All IPD observations use the "current study" ethnic offsets de0, demax.
+  # For non-Asian rows (race = 0) the offset drops out; for Asian rows
+  # (race = 1) the offset enters with weight 1.
   for (i in 1:N_ipd) {
     y[i] ~ dnorm(mu[i], var = tau2 / n[i])
-
+    
     mu[i] <- e0 + de0 * race[i] + a * z[i] +
       (k + dk * race[i]) * x[i] +
-      (emax + demax * race[i]) * x[i]^(r1_a_sel[i]) /
-      (ed50_a_sel[i]^(r1_a_sel[i]) + x[i]^(r1_a_sel[i]))
-
-    ed50_a_sel[i] <- ed50  * (1 - race[i]) + ed50_a * race[i]
-    r1_a_sel[i]   <- r1    * (1 - race[i]) + r1_a   * race[i]
+      (emax + demax * race[i]) *
+      x[i]^(r1 + dr1 * race[i]) /
+      ((ed50 + ded50 * race[i])^(r1 + dr1 * race[i]) +
+         x[i]^(r1 + dr1 * race[i]))
   }
-
-  # ---- External aggregate block: Hu and Sng (both Asian: use ed50_a, r1_a) ----
+  
+  # ---- External aggregate block: Hu and Sng only ----
+  # Each external source has its own de0_ext[s] and demax_ext[s],
+  # drawn hierarchically from a common population mean.
   for (j in 1:N_agg) {
     y_agg[j] ~ dnorm(mu_agg[j], var = tau2 / n_agg[j])
-
+    
     mu_agg[j] <- e0 + de0_ext[agg_source_id[j]] + a * z_agg[j] +
       (k + dk) * x_agg[j] +
-      (emax + demax_ext[agg_source_id[j]]) * x_agg[j]^(r1_a) /
-      (ed50_a^(r1_a) + x_agg[j]^(r1_a))
+      (emax + demax_ext[agg_source_id[j]]) *
+      x_agg[j]^(r1 + dr1) /
+      ((ed50 + ded50)^(r1 + dr1) +
+         x_agg[j]^(r1 + dr1))
   }
   
   # ---- MAP hierarchy over external sources (Hu, Sng) ----
@@ -634,23 +599,14 @@ code_robust_map <- nimbleCode({
   demax_pop ~ dnorm(0, sd = 1)
   tau_map   ~ T(dnorm(0, sd = 0.5), 0, )
   
-  # [v10] Log reparameterization
-  log_ed50   ~ dnorm(log(10), sd = 1)
-  ed50       <- exp(log_ed50)
-  log_ed50_a ~ dnorm(log(10), sd = 1)
-  ed50_a     <- exp(log_ed50_a)
-  ded50      <- ed50_a - ed50
-
-  log_r1     ~ dnorm(0, sd = 1)
-  r1         <- exp(log_r1)
-  log_r1_a   ~ dnorm(0, sd = 1)
-  r1_a       <- exp(log_r1_a)
-  dr1        <- r1_a - r1
-
   e0    ~ dnorm(0, sd = sqrt(10))
   emax  ~ dnorm(0, sd = 1)
   k     ~ dnorm(0, sd = 10)
+  ed50  ~ T(dnorm(10, sd = sqrt(10)), 0, )
+  r1    ~ T(dnorm(0, sd = 10), 0, )
   dk    ~ dnorm(0, sd = sqrt(10))
+  ded50 ~ T(dnorm(0, sd = sqrt(10)), -ed50, )
+  dr1   ~ T(dnorm(0, sd = 10), -r1, )
   a     ~ dnorm(0, sd = 10)
   tau2  ~ dinvgamma(0.01, 0.01)
 })
@@ -670,10 +626,8 @@ build_primary_inputs <- function(dat) {
                     z    = dat$base.pd.cent,
                     race = dat$race,
                     n    = dat$n)
-  # [v10] Inits for log-reparameterized ed50/r1 parameters
   inits     <- list(e0 = -0.6, de0 = 0, emax = 0.3, demax = 0,
-                    log_ed50 = log(10), log_ed50_a = log(10),
-                    log_r1   = log(1),  log_r1_a   = log(1),
+                    ed50 = 10, ded50 = 1, r1 = 1, dr1 = 0.1,
                     k = -0.0003, dk = 0, a = -0.02, tau2 = 0.05)
   list(constants = constants, data = data, inits = inits)
 }
@@ -709,50 +663,26 @@ build_primary_inputs <- function(dat) {
 
 # Helper: install the block + slice samplers on an mcmcConf object.
 # Used by both the sequential and parallel code paths.
-#
-# [v9] Sampler strategy — three-tier approach for the Emax ridge:
-#
-#   Tier 1: ONE merged 8-parameter RW_block over all Emax parameters.
-#     The previous two separate 4-parameter blocks (level + shape) did
-#     not capture the cross-block correlations:
-#       emax ↔ ed50  (higher Emax → apparent ED50 shifts)
-#       emax ↔ r1    (Emax and Hill coefficient trade off on steep curves)
-#       e0   ↔ emax  (intercept and ceiling are negatively correlated)
-#     A single 8×8 AM block adapts the full covariance matrix and
-#     proposes joint moves that stay on the ridge, dramatically
-#     reducing autocorrelation compared to separate 4×4 blocks.
-#
-#   Tier 2: Slice samplers on r1 and dr1 IN ADDITION to the block.
-#     r1 has a heavy right tail (posterior mass extends to ~15+); slice
-#     sampling handles this with no tuning.  These run as scalar updates
-#     supplementing the block's joint proposals.
-#
-#   Tier 3: All other parameters (k, dk, a, tau2) keep the default
-#     scalar RW sampler — they mix near-perfectly (ESS ~100k).
 .install_xen_samplers <- function(mcmcConf, node_tops) {
-
-  # [v11] Sampler strategy after diagnosing the v10 ESS pattern:
-  #   log_ed50/log_ed50_a cleared 500 as scalars (697/1427), but emax (94),
-  #   log_r1 (133), e0 (192) stayed stuck.  Cause: emax is correlated with
-  #   log_r1 through the Emax curve, but log_r1 sat OUTSIDE the level block.
-  #   ED50 decoupled because it mixes fast; r1 is the slow partner trapping
-  #   emax.  Fix: put the slow, mutually-correlated parameters in ONE block.
-  #
-  #   Block (8 params): e0, de0, emax, demax, k, dk, log_r1, log_r1_a
-  #     — all unconstrained/Gaussian after the v10 log reparam, so the AM
-  #       block adapts cleanly (the v9 block failed only because ed50/r1
-  #       truncation boundaries broke the Gaussian proposal; that is gone).
-  #   Scalar (default): log_ed50, log_ed50_a (already fast), a, tau2
-  #     — leaving the fast-mixing ED50 pair out keeps the block lower-
-  #       dimensional, which improves AM efficiency.
-  emax_block <- c("e0", "de0", "emax", "demax",
-                  "k", "dk", "log_r1", "log_r1_a")
-  available  <- intersect(emax_block, node_tops)
-  if (length(available) >= 2) {
-    mcmcConf$removeSamplers(available)
-    mcmcConf$addSampler(target = available, type = "RW_block")
+  
+  emax_shape_block <- c("ed50", "ded50", "r1", "dr1")
+  if (all(emax_shape_block %in% node_tops)) {
+    mcmcConf$removeSamplers(emax_shape_block)
+    mcmcConf$addSampler(target = emax_shape_block, type = "RW_block")
   }
-
+  
+  emax_level_block <- c("e0", "de0", "emax", "demax")
+  if (all(emax_level_block %in% node_tops)) {
+    mcmcConf$removeSamplers(emax_level_block)
+    mcmcConf$addSampler(target = emax_level_block, type = "RW_block")
+  }
+  
+  for (tail_par in c("r1", "dr1")) {
+    if (tail_par %in% node_tops) {
+      mcmcConf$addSampler(target = tail_par, type = "slice")
+    }
+  }
+  
   invisible(mcmcConf)
 }
 
@@ -768,32 +698,32 @@ build_primary_inputs <- function(dat) {
   
   model <- nimbleModel(code, constants = constants, data = data,
                        inits = inits, check = FALSE)
-  # [v11] BUG FIX: monitors must be validated against ALL nodes (including
-  # deterministic ones), not just stochastic.  Since v10 made ed50/ded50/
-  # r1/dr1 DETERMINISTIC, filtering by stochOnly silently dropped them,
-  # which broke compute_fitted_curves() (samps$ed50 = NULL → colMeans
-  # error) and every downstream PPC/plot step.  Sampler install still
-  # uses stochastic-only tops (you cannot sample a deterministic node).
-  stoch_tops <- unique(gsub("\\[.*", "",
-                  model$getNodeNames(stochOnly = TRUE, includeData = FALSE)))
-  all_tops   <- unique(gsub("\\[.*", "",
-                  model$getNodeNames(includeData = FALSE)))
-  monitors   <- intersect(monitors, all_tops)
-
+  node_names <- model$getNodeNames(stochOnly = TRUE, includeData = FALSE)
+  node_tops  <- unique(gsub("\\[.*", "", node_names))
+  monitors   <- intersect(monitors, node_tops)
+  
   cModel    <- compileNimble(model)
   mcmcConf  <- configureMCMC(model, monitors = monitors, enableWAIC = FALSE)
-
-  # [v11] Install samplers — inlined from .install_xen_samplers (worker
-  # processes cannot serialize the helper).  8-parameter block over the
-  # slow, mutually-correlated mean-function parameters.
-  emax_block <- c("e0", "de0", "emax", "demax",
-                  "k", "dk", "log_r1", "log_r1_a")
-  available  <- intersect(emax_block, stoch_tops)
-  if (length(available) >= 2) {
-    mcmcConf$removeSamplers(available)
-    mcmcConf$addSampler(target = available, type = "RW_block")
+  
+  # Install the XEN-specific block and slice samplers.  Because this
+  # function runs inside a worker, the helper .install_xen_samplers is
+  # not automatically available; we inline the same sampler setup here.
+  emax_shape_block <- c("ed50", "ded50", "r1", "dr1")
+  if (all(emax_shape_block %in% node_tops)) {
+    mcmcConf$removeSamplers(emax_shape_block)
+    mcmcConf$addSampler(target = emax_shape_block, type = "RW_block")
   }
-
+  emax_level_block <- c("e0", "de0", "emax", "demax")
+  if (all(emax_level_block %in% node_tops)) {
+    mcmcConf$removeSamplers(emax_level_block)
+    mcmcConf$addSampler(target = emax_level_block, type = "RW_block")
+  }
+  for (tail_par in c("r1", "dr1")) {
+    if (tail_par %in% node_tops) {
+      mcmcConf$addSampler(target = tail_par, type = "slice")
+    }
+  }
+  
   mcmc  <- buildMCMC(mcmcConf)
   cMCMC <- compileNimble(mcmc, project = model)
   
@@ -801,82 +731,20 @@ build_primary_inputs <- function(dat) {
   as.matrix(cMCMC$mvSamples)
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ESS TROUBLESHOOTING LADDER  (status after each diagnostic run)
-# ─────────────────────────────────────────────────────────────────────────────
-#
-# [v9 — SUPERSEDED] Fix 1: merged 8-parameter RW_block.
-#   Made ESS WORSE (ed50→5) because the truncated ed50/r1 boundaries broke
-#   the block's Gaussian proposal.  Removed.
-#
-# [v10 — ACTIVE] Fix 2: Log reparameterization of ed50, r1, offsets.
-#   Implemented in all model blocks.  RESULT: log_ed50 (697) and
-#   log_ed50_a (1427) cleared 500; but emax (94), log_r1 (133), e0 (192)
-#   stayed low because log_r1 was outside the level block.
-#
-# [v11 — ACTIVE] Fix 2b: Block-membership fix.
-#   Put the slow, correlated params in ONE log-scale block:
-#     (e0, de0, emax, demax, k, dk, log_r1, log_r1_a)
-#   log_ed50/log_ed50_a stay scalar (already fast).  Targets the
-#   emax↔log_r1↔e0 ridge directly.  RUN THIS, then re-check ESS.
-#   If emax / log_r1 still < 500 → Fix 3 (NUTS).
-#
-# Fix 3: NUTS (No-U-Turn Sampler) via nimbleHMC — FINAL, GUARANTEED.
-#   NUTS uses gradients to traverse the ridge in one step; it solves
-#   Emax-model mixing regardless of correlation.  Apply to the PRIMARY
-#   model only (and any single problem fit), NOT blanket, because:
-#     - the PIECEWISE model uses step() → non-differentiable → NUTS fails;
-#     - the ROBUST-MAP model uses the custom dRobustNorm → no derivatives.
-#   For those two, keep the RW_block path.
-#
-#   Setup (one time):
-#     install.packages("nimbleHMC")
-#
-#   In the SEQUENTIAL path, build the model with derivatives and use
-#   nimbleHMC's configurator (Fix 2's log reparam already removed the
-#   truncated priors that are incompatible with NUTS):
-#
-#     model <- nimbleModel(code, constants = constants, data = data,
-#                          inits = inits, check = FALSE, buildDerivs = TRUE)
-#     mcmcConf <- nimbleHMC::configureHMC(model, monitors = monitors)
-#     # configureHMC puts NUTS on all continuous nodes automatically.
-#
-#   NUTS needs FAR fewer iterations (it is near-i.i.d.).  Call run_nimble
-#   with nBurnin = 1000, nIter = 2000, nThin = 1 — that typically yields
-#   ESS > 1000 and runs in a few minutes per chain despite the higher
-#   per-iteration cost.  Do NOT run NUTS at 50000 iters (it would be
-#   needlessly slow).
-# ─────────────────────────────────────────────────────────────────────────────
-
 run_nimble <- function(code, constants, data, inits,
                        monitors = NULL,
-                       nBurnin = 50000, nIter = 50000, nThin = 1,
+                       nBurnin = 10000, nIter = 100000, nThin = 1,
                        nChains = 2, setSeed = 1223456,
                        enableWAIC = FALSE,
                        parallel = TRUE,
                        n_workers = NULL,
                        fast = FALSE) {
-  # [v8] Defaults: 50k burnin (5x longer for better block-sampler adaptation)
-  #               + 50k post-burnin with nThin=1 (keep every draw).
-  #               Total sweeps/chain = 100k — identical to prior setting of
-  #               nBurnin=10k + nIter=10k*nThin=10 = 110k, but the block
-  #               RW_block adapts far better with 50k burnin, lifting ESS
-  #               from ~100 to ~1000+ for the Emax-level parameters.
-  # [v8] fast=TRUE: 40k sweeps/chain — 2.75x fewer than old 110k setting.
-  #               Used for sensitivity analyses (LOSO, tipping, power prior,
-  #               prior sensitivity, commensurate, MAP, S8 structural models)
-  #               where stable mean/CrI estimates are needed but not the
-  #               same ESS as the primary.
-  if (fast) { nBurnin <- 20000; nIter <- 20000; nThin <- 1 }
+  
+  if (fast) { nBurnin <- 5000; nIter <- 5000; nThin <- 1 }   # [Fix 2] shorter chains
   
   if (is.null(monitors)) {
-    # [v10] Include both the stochastic log-scale parameters (for ESS
-    # diagnostics) and the derived original-scale nodes (ed50, ded50,
-    # r1, dr1 — deterministic) for summary tables and curve computation.
-    monitors <- c("e0", "de0", "emax", "demax",
-                  "ed50", "ded50", "r1", "dr1",
-                  "log_ed50", "log_ed50_a", "log_r1", "log_r1_a",
-                  "k", "dk", "a", "tau2")
+    monitors <- c("e0", "de0", "emax", "demax", "ed50", "ded50",
+                  "r1", "dr1", "k", "dk", "a", "tau2")
   }
   
   # WAIC currently requires sequential execution because it is read from
@@ -981,20 +849,15 @@ run_nimble <- function(code, constants, data, inits,
   # ------------------------------------------------------------------- #
   model <- nimbleModel(code, constants = constants, data = data,
                        inits = inits, check = FALSE)
-
-  # [v11] BUG FIX (see parallel path): validate monitors against ALL nodes
-  # so deterministic ed50/ded50/r1/dr1 are retained; install samplers
-  # against stochastic-only tops.
-  stoch_tops <- unique(gsub("\\[.*", "",
-                  model$getNodeNames(stochOnly = TRUE, includeData = FALSE)))
-  all_tops   <- unique(gsub("\\[.*", "",
-                  model$getNodeNames(includeData = FALSE)))
-  monitors   <- intersect(monitors, all_tops)
-
+  
+  node_names <- model$getNodeNames(stochOnly = TRUE, includeData = FALSE)
+  node_tops  <- unique(gsub("\\[.*", "", node_names))
+  monitors   <- intersect(monitors, node_tops)
+  
   cModel   <- compileNimble(model)
   mcmcConf <- configureMCMC(model, monitors = monitors,
                             enableWAIC = enableWAIC)
-  .install_xen_samplers(mcmcConf, stoch_tops)
+  .install_xen_samplers(mcmcConf, node_tops)
   
   mcmc  <- buildMCMC(mcmcConf)
   cMCMC <- compileNimble(mcmc, project = model)
@@ -1135,7 +998,7 @@ weighted_base_iop <- function(dat) {
                          constants = inp$constants,
                          data      = inp$data,
                          inits     = inp$inits,
-                         fast      = TRUE,    # [v8] 40k sweeps sufficient for LOSO
+                         fast      = TRUE,     # fast mode for LOSO
                          parallel  = FALSE)   # no nested parallelism
   list(
     summary           = summarise_mcmc(mcmc, delta_params),
@@ -1158,7 +1021,7 @@ weighted_base_iop <- function(dat) {
                      constants = inp$constants,
                      data      = inp$data,
                      inits     = inp$inits,
-                     fast      = TRUE,    # [v8] 40k sweeps sufficient for tipping
+                     fast      = TRUE,     # fast mode for tipping
                      parallel  = FALSE)
   smry     <- summarise_mcmc(mcmc, delta_check_params)
   any_excl <- any(smry[,"2.5%"] > 0 | smry[,"97.5%"] < 0)
@@ -1198,13 +1061,11 @@ weighted_base_iop <- function(dat) {
                y_disc    = dat_disc$pdpch, x_disc    = dat_disc$visit,
                z_disc    = dat_disc$base.pd.cent, race_disc = dat_disc$race,
                n_disc    = dat_disc$n)
-  pp_i <- list(e0=-0.6, de0=0, emax=0.3, demax=0,
-               log_ed50=log(10), log_ed50_a=log(10),
-               log_r1=log(1),    log_r1_a=log(1),
-               k=-0.0003, dk=0, a=-0.02, tau2=0.05)
+  pp_i <- list(e0=-0.6, de0=0, emax=0.3, demax=0, ed50=10, ded50=1,
+               r1=1, dr1=0.1, k=-0.0003, dk=0, a=-0.02, tau2=0.05)
   mcmc <- run_nimble(code = code_power_prior,
                      constants = pp_c, data = pp_d, inits = pp_i,
-                     fast      = TRUE,    # [v8] 40k sweeps sufficient for power prior
+                     fast      = TRUE,     # fast mode for power prior
                      parallel  = FALSE)
   summarise_mcmc(mcmc, delta_params)
 }
@@ -1271,10 +1132,6 @@ mcmc_primary <- run_nimble(
   parallel   = TRUE
 )
 
-# [v10] delta_params: ed50, ded50, r1, dr1 are now deterministic nodes
-# (derived from log_ed50/log_ed50_a/log_r1/log_r1_a).  nimble monitors
-# deterministic nodes when listed explicitly; the posterior samples of
-# ed50 etc. are computed from the sampled log-scale parameters.
 delta_params <- c("e0", "de0", "emax", "demax", "ed50", "ded50",
                   "r1", "dr1", "k", "dk", "a", "tau2")
 primary_summary <- summarise_mcmc(mcmc_primary, delta_params)
@@ -1282,27 +1139,6 @@ cat("\nPrimary Analysis — Posterior Summary (cf. Report Table 5):\n")
 print_rounded(primary_summary, 4)
 
 df_to_latex(primary_summary, rownames=TRUE, file = "Primary_analysis_table.tex")
-
-# [v8] ESS check — warn early if any parameter is below 500.
-# [v11] ESS diagnostics report the STOCHASTIC nodes (log_ed50, log_r1,
-# emax, ...).  Deterministic ed50/ded50/r1/dr1 inherit their parents' ESS.
-cat("\n[v11] ESS check (primary):\n")
-ess_primary <- coda::effectiveSize(mcmc_primary)
-print(round(ess_primary, 0))
-low_ess <- names(ess_primary)[ess_primary < 500]
-if (length(low_ess) > 0) {
-  warning(
-    "[v11] ESS < 500 for: ", paste(low_ess, collapse = ", "), "\n",
-    "  RW_block has been tuned as far as it productively goes for this\n",
-    "  Emax ridge.  The guaranteed next step is NUTS (Fix 3 in the ESS\n",
-    "  TROUBLESHOOTING LADDER above): install.packages('nimbleHMC'),\n",
-    "  build the PRIMARY model with buildDerivs = TRUE, and use\n",
-    "  nimbleHMC::configureHMC() at nBurnin=1000, nIter=2000.\n",
-    "  Do NOT keep increasing RW iterations — it will not clear 500."
-  )
-} else {
-  cat("  All parameters: ESS >= 500. Convergence criteria met.\n")
-}
 
 save.image("Sensitivity_results.RData")
 
@@ -1687,10 +1523,8 @@ mcmc_noborrow <- run_nimble(
   code      = code_primary,
   constants = inp_nb$constants,
   data      = inp_nb$data,
-  inits     = inp_nb$inits
-  # [v8] Uses default settings (50k burnin + 50k iter, nThin=1): the
-  # no-borrow posterior variance is the ESS denominator in A4, so this
-  # fit needs the same accuracy as the primary.
+  inits     = inp_nb$inits,
+  fast      = FALSE    # [Fix 2] 5 000 iter sufficient for CrI width comparison
 )
 
 # [UPDATED] Recompute baseline IOP for IPD-only using weighted mean
@@ -1818,29 +1652,21 @@ code_vague_deltas <- nimbleCode({
     y[i] ~ dnorm(mu[i], var = tau2 / n[i])
     mu[i] <- e0 + de0 * race[i] + a * z[i] +
       (k + dk * race[i]) * x[i] +
-      (emax + demax * race[i]) * x[i]^(r1_a_sel[i]) /
-      (ed50_a_sel[i]^(r1_a_sel[i]) + x[i]^(r1_a_sel[i]))
-    ed50_a_sel[i] <- ed50  * (1 - race[i]) + ed50_a * race[i]
-    r1_a_sel[i]   <- r1    * (1 - race[i]) + r1_a   * race[i]
+      (emax + demax * race[i]) * x[i]^(r1 + dr1 * race[i]) /
+      ((ed50 + ded50 * race[i])^(r1 + dr1 * race[i]) +
+         x[i]^(r1 + dr1 * race[i]))
   }
-  # [v10] Log reparameterization
-  log_ed50   ~ dnorm(log(10), sd = 1)
-  ed50       <- exp(log_ed50)
-  log_ed50_a ~ dnorm(log(10), sd = 1)
-  ed50_a     <- exp(log_ed50_a)
-  ded50      <- ed50_a - ed50
-  log_r1     ~ dnorm(0, sd = 1)
-  r1         <- exp(log_r1)
-  log_r1_a   ~ dnorm(0, sd = 1)
-  r1_a       <- exp(log_r1_a)
-  dr1        <- r1_a - r1
   e0    ~ dnorm(0, sd = sqrt(10))
   emax  ~ dnorm(0, sd = 1)
   k     ~ dnorm(0, sd = 10)
+  ed50  ~ T(dnorm(10, sd = sqrt(10)), 0, )
+  r1    ~ T(dnorm(0, sd = 10), 0, )
   # VAGUE deltas: SD multiplied by 10 from original
-  de0   ~ dnorm(0, sd = 10)
-  demax ~ dnorm(0, sd = 10)
-  dk    ~ dnorm(0, sd = 10)
+  de0   ~ dnorm(0, sd = 10)        # was 1
+  demax ~ dnorm(0, sd = 10)        # was 1
+  dk    ~ dnorm(0, sd = 10)        # was sqrt(10) ≈ 3.16
+  ded50 ~ T(dnorm(0, sd = 10), -ed50, )   # was sqrt(10)
+  dr1   ~ T(dnorm(0, sd = 100), -r1, )    # was 10
   a     ~ dnorm(0, sd = 10)
   tau2  ~ dinvgamma(0.01, 0.01)
 })
@@ -1851,7 +1677,7 @@ mcmc_vague <- run_nimble(
   constants = inputs$constants,
   data      = inputs$data,
   inits     = inputs$inits,
-  fast      = TRUE    # [v8] 40k sweeps: sufficient for prior sensitivity comparison
+  fast      = TRUE
 )
 vague_summary <- summarise_mcmc(mcmc_vague, delta_params)
 
@@ -1861,29 +1687,21 @@ code_informative_deltas <- nimbleCode({
     y[i] ~ dnorm(mu[i], var = tau2 / n[i])
     mu[i] <- e0 + de0 * race[i] + a * z[i] +
       (k + dk * race[i]) * x[i] +
-      (emax + demax * race[i]) * x[i]^(r1_a_sel[i]) /
-      (ed50_a_sel[i]^(r1_a_sel[i]) + x[i]^(r1_a_sel[i]))
-    ed50_a_sel[i] <- ed50  * (1 - race[i]) + ed50_a * race[i]
-    r1_a_sel[i]   <- r1    * (1 - race[i]) + r1_a   * race[i]
+      (emax + demax * race[i]) * x[i]^(r1 + dr1 * race[i]) /
+      ((ed50 + ded50 * race[i])^(r1 + dr1 * race[i]) +
+         x[i]^(r1 + dr1 * race[i]))
   }
-  # [v10] Log reparameterization
-  log_ed50   ~ dnorm(log(10), sd = 1)
-  ed50       <- exp(log_ed50)
-  log_ed50_a ~ dnorm(log(10), sd = 1)
-  ed50_a     <- exp(log_ed50_a)
-  ded50      <- ed50_a - ed50
-  log_r1     ~ dnorm(0, sd = 1)
-  r1         <- exp(log_r1)
-  log_r1_a   ~ dnorm(0, sd = 1)
-  r1_a       <- exp(log_r1_a)
-  dr1        <- r1_a - r1
   e0    ~ dnorm(0, sd = sqrt(10))
   emax  ~ dnorm(0, sd = 1)
   k     ~ dnorm(0, sd = 10)
+  ed50  ~ T(dnorm(10, sd = sqrt(10)), 0, )
+  r1    ~ T(dnorm(0, sd = 10), 0, )
   # INFORMATIVE deltas: small offsets, tight SD
   de0   ~ dnorm(-0.05, sd = 0.5)
   demax ~ dnorm(0.05, sd = 0.5)
   dk    ~ dnorm(0, sd = 0.5)
+  ded50 ~ T(dnorm(0, sd = 5), -ed50, )
+  dr1   ~ T(dnorm(0, sd = 5), -r1, )
   a     ~ dnorm(0, sd = 10)
   tau2  ~ dinvgamma(0.01, 0.01)
 })
@@ -1894,7 +1712,7 @@ mcmc_informative <- run_nimble(
   constants = inputs$constants,
   data      = inputs$data,
   inits     = inputs$inits,
-  fast      = TRUE    # [v8] 40k sweeps: sufficient for prior sensitivity comparison
+  fast      = TRUE
 )
 informative_summary <- summarise_mcmc(mcmc_informative, delta_params)
 
@@ -2119,8 +1937,7 @@ comm_data <- list(
   n_agg    = dat_agg_comm$n
 )
 comm_inits <- list(e0 = -0.6, de0 = 0, emax = 0.3, demax = 0,
-                   log_ed50 = log(10), log_ed50_a = log(10),
-                   log_r1   = log(1),  log_r1_a   = log(1),
+                   ed50 = 10, ded50 = 1, r1 = 1, dr1 = 0.1,
                    k = -0.0003, dk = 0, a = -0.02, tau2 = 0.05,
                    tau_c = 1,
                    e0_agg   = c(-0.6, -0.6),
@@ -2134,7 +1951,7 @@ mcmc_comm <- run_nimble(
   data      = comm_data,
   inits     = comm_inits,
   monitors  = comm_monitors,
-  fast      = TRUE    # [v8] 40k sweeps
+  fast      = TRUE
 )
 
 comm_summary <- summarise_mcmc(mcmc_comm,
@@ -2202,8 +2019,7 @@ map_inits <- list(
   e0 = -0.6, emax = 0.3,
   de0 = 0, demax = 0,
   k = -0.0003, dk = 0, a = -0.02, tau2 = 0.05,
-  log_ed50 = log(10), log_ed50_a = log(10),
-  log_r1   = log(1),  log_r1_a   = log(1),
+  ed50 = 10, ded50 = 1, r1 = 1, dr1 = 0.1,
   de0_ext   = c(0, 0),
   demax_ext = c(0, 0),
   de0_pop = 0, demax_pop = 0,
@@ -2221,7 +2037,7 @@ mcmc_map <- run_nimble(
   data      = map_data,
   inits     = map_inits,
   monitors  = map_monitors,
-  fast      = TRUE    # [v8] 40k sweeps
+  fast      = TRUE
 )
 
 map_summary <- summarise_mcmc(mcmc_map)
@@ -2312,12 +2128,11 @@ mcmc_emax <- run_nimble(
   constants = inputs$constants,
   data      = inputs$data,
   inits     = list(e0 = -0.6, de0 = 0, emax = 0.3, demax = 0,
-                   log_ed50 = log(10), log_ed50_a = log(10),
-                   log_r1   = log(1),  log_r1_a   = log(1),
+                   ed50 = 10, ded50 = 1, r1 = 1, dr1 = 0.1,
                    a = -0.02, tau2 = 0.05),
-  monitors   = emax_monitors,
-  enableWAIC = TRUE,    # [FIX 10]
-  fast       = TRUE     # [v8] 40k sweeps; WAIC for ranking is stable at this length
+  monitors  = emax_monitors,
+  fast      = TRUE,
+  enableWAIC = TRUE     # [FIX 10]
 )
 
 emax_summary <- summarise_mcmc(mcmc_emax, emax_monitors)
@@ -2343,9 +2158,9 @@ mcmc_pw <- run_nimble(
                    b3 = -0.0003, db3 = 0,
                    b4 = -0.0003, db4 = 0,
                    a = -0.02, tau2 = 0.05),
-  monitors   = pw_monitors,
-  enableWAIC = TRUE,    # [FIX 10]
-  fast       = TRUE     # [v8] 40k sweeps
+  monitors  = pw_monitors,
+  fast      = TRUE,
+  enableWAIC = TRUE     # [FIX 10]
 )
 
 pw_summary <- summarise_mcmc(mcmc_pw, pw_monitors)
