@@ -663,26 +663,46 @@ build_primary_inputs <- function(dat) {
 
 # Helper: install the block + slice samplers on an mcmcConf object.
 # Used by both the sequential and parallel code paths.
+#
+# [v9] Sampler strategy — three-tier approach for the Emax ridge:
+#
+#   Tier 1: ONE merged 8-parameter RW_block over all Emax parameters.
+#     The previous two separate 4-parameter blocks (level + shape) did
+#     not capture the cross-block correlations:
+#       emax ↔ ed50  (higher Emax → apparent ED50 shifts)
+#       emax ↔ r1    (Emax and Hill coefficient trade off on steep curves)
+#       e0   ↔ emax  (intercept and ceiling are negatively correlated)
+#     A single 8×8 AM block adapts the full covariance matrix and
+#     proposes joint moves that stay on the ridge, dramatically
+#     reducing autocorrelation compared to separate 4×4 blocks.
+#
+#   Tier 2: Slice samplers on r1 and dr1 IN ADDITION to the block.
+#     r1 has a heavy right tail (posterior mass extends to ~15+); slice
+#     sampling handles this with no tuning.  These run as scalar updates
+#     supplementing the block's joint proposals.
+#
+#   Tier 3: All other parameters (k, dk, a, tau2) keep the default
+#     scalar RW sampler — they mix near-perfectly (ESS ~100k).
 .install_xen_samplers <- function(mcmcConf, node_tops) {
-  
-  emax_shape_block <- c("ed50", "ded50", "r1", "dr1")
-  if (all(emax_shape_block %in% node_tops)) {
-    mcmcConf$removeSamplers(emax_shape_block)
-    mcmcConf$addSampler(target = emax_shape_block, type = "RW_block")
+
+  # [v9] Single merged block over ALL eight Emax parameters.
+  # Replaces the previous two 4-parameter blocks which failed to
+  # capture cross-block correlations between level and shape.
+  emax_all_block <- c("e0", "de0", "emax", "demax",
+                      "ed50", "ded50", "r1", "dr1")
+  available_block <- intersect(emax_all_block, node_tops)
+  if (length(available_block) >= 2) {
+    mcmcConf$removeSamplers(available_block)
+    mcmcConf$addSampler(target = available_block, type = "RW_block")
   }
-  
-  emax_level_block <- c("e0", "de0", "emax", "demax")
-  if (all(emax_level_block %in% node_tops)) {
-    mcmcConf$removeSamplers(emax_level_block)
-    mcmcConf$addSampler(target = emax_level_block, type = "RW_block")
-  }
-  
+
+  # Supplementary slice samplers on heavy-tailed shape parameters.
   for (tail_par in c("r1", "dr1")) {
     if (tail_par %in% node_tops) {
       mcmcConf$addSampler(target = tail_par, type = "slice")
     }
   }
-  
+
   invisible(mcmcConf)
 }
 
@@ -705,18 +725,15 @@ build_primary_inputs <- function(dat) {
   cModel    <- compileNimble(model)
   mcmcConf  <- configureMCMC(model, monitors = monitors, enableWAIC = FALSE)
   
-  # Install the XEN-specific block and slice samplers.  Because this
-  # function runs inside a worker, the helper .install_xen_samplers is
-  # not automatically available; we inline the same sampler setup here.
-  emax_shape_block <- c("ed50", "ded50", "r1", "dr1")
-  if (all(emax_shape_block %in% node_tops)) {
-    mcmcConf$removeSamplers(emax_shape_block)
-    mcmcConf$addSampler(target = emax_shape_block, type = "RW_block")
-  }
-  emax_level_block <- c("e0", "de0", "emax", "demax")
-  if (all(emax_level_block %in% node_tops)) {
-    mcmcConf$removeSamplers(emax_level_block)
-    mcmcConf$addSampler(target = emax_level_block, type = "RW_block")
+  # [v9] Install samplers — inlined from .install_xen_samplers because
+  # worker processes cannot serialize the helper from the parent env.
+  # Single merged 8-parameter block for the full Emax correlation ridge.
+  emax_all_block <- c("e0", "de0", "emax", "demax",
+                      "ed50", "ded50", "r1", "dr1")
+  available_block <- intersect(emax_all_block, node_tops)
+  if (length(available_block) >= 2) {
+    mcmcConf$removeSamplers(available_block)
+    mcmcConf$addSampler(target = available_block, type = "RW_block")
   }
   for (tail_par in c("r1", "dr1")) {
     if (tail_par %in% node_tops) {
@@ -730,6 +747,68 @@ build_primary_inputs <- function(dat) {
   cMCMC$run(nBurnin + nIter * nThin, thin = nThin, nburnin = nBurnin)
   as.matrix(cMCMC$mvSamples)
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ESS TROUBLESHOOTING LADDER  (activate in order if ESS < 500 persists)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# [v9 — ACTIVE] Fix 1: Single merged 8-parameter RW_block.
+#   Already implemented in .install_xen_samplers above.
+#   Try this first: run the script, check ESS.  If still < 500 → Fix 2.
+#
+# Fix 2: Log reparameterization of ed50, r1, and their ethnic offsets.
+#   Why: r1 and ed50 are strictly positive with skewed posteriors.
+#   Sampling on the log scale removes the right-skew and eliminates
+#   truncated-normal constraints, which helps AM adaptation enormously.
+#
+#   Replace in code_primary (and all other model blocks):
+#
+#     # REMOVE these lines:
+#     ed50  ~ T(dnorm(10, sd = sqrt(10)), 0, )
+#     r1    ~ T(dnorm(0,  sd = 10),       0, )
+#     ded50 ~ T(dnorm(0,  sd = sqrt(10)), -ed50, )
+#     dr1   ~ T(dnorm(0,  sd = 10),       -r1,   )
+#
+#     # REPLACE WITH:
+#     log_ed50       ~ dnorm(log(10), sd = 1)     # prior on log scale
+#     ed50           <- exp(log_ed50)              # deterministic
+#     log_ed50_asian ~ dnorm(log(10), sd = 1)
+#     ed50_asian     <- exp(log_ed50_asian)
+#     ded50          <- ed50_asian - ed50          # ed50+ded50 = exp(...) > 0
+#
+#     log_r1         ~ dnorm(0, sd = 1)
+#     r1             <- exp(log_r1)
+#     log_r1_asian   ~ dnorm(0, sd = 1)
+#     r1_asian       <- exp(log_r1_asian)
+#     dr1            <- r1_asian - r1
+#
+#   Inits change: replace ed50=10, ded50=1, r1=1, dr1=0.1 with
+#     log_ed50=log(10), log_ed50_asian=log(11), log_r1=0, log_r1_asian=log(1.1)
+#
+#   This change must be applied to ALL model code blocks (primary,
+#   emax_only, piecewise, power_prior, commensurate, robust_map, and
+#   the vague/informative prior variants).  If ESS still < 500 → Fix 3.
+#
+# Fix 3: NUTS (No-U-Turn Sampler) via nimbleHMC.
+#   NUTS uses gradient information to propose moves that traverse the
+#   ridge in one step; it is essentially guaranteed to solve Emax-model
+#   mixing regardless of correlation structure.
+#
+#   One-time setup:
+#     install.packages("nimbleHMC")
+#
+#   In .install_xen_samplers, replace the RW_block block with:
+#     library(nimbleHMC)
+#     nuts_params <- intersect(c("e0","de0","emax","demax",
+#                                "ed50","ded50","r1","dr1","k","dk","a"),
+#                              node_tops)
+#     mcmcConf$removeSamplers(nuts_params)
+#     mcmcConf$addSampler(target = nuts_params, type = "NUTS")
+#
+#   Note: NUTS is incompatible with truncated priors in nimble unless
+#   the log reparameterization (Fix 2) is also applied.  If you install
+#   nimbleHMC, apply Fix 2 first, then swap in NUTS.
+# ─────────────────────────────────────────────────────────────────────────────
 
 run_nimble <- function(code, constants, data, inits,
                        monitors = NULL,
